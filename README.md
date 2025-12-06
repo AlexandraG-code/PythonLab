@@ -1,2 +1,2 @@
-# PythonLab
-This is repository for diferents features
+# Домашние задания
+Ермолинская А.А
