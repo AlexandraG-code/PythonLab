@@ -20,6 +20,13 @@ class OperationStatus(Enum):
     FAIL = "fail"
 
 
+class FundsType(Enum):
+    """Типы используемых средств"""
+    OWN = "own_funds"
+    CREDIT = "credit_funds"
+    MIXED = "mixed_funds"
+
+
 # Тип описывающий структуру объекта, которая будет добавлена в историю операций
 class Operation(TypedDict):
     type: OperationType
@@ -28,6 +35,7 @@ class Operation(TypedDict):
     balance_after: float
     status: OperationStatus
     message: str
+    funds_type: FundsType | None
 
 
 class IAccount(ABC):
@@ -92,7 +100,7 @@ class IAccount(ABC):
 
     @abstractmethod
     def _add_to_history(self, operation_type: OperationType, amount: float, status: OperationStatus,
-                        message: str) -> None:
+                        message: str, funds_type: FundsType) -> None:
         """
             Внутренний метод для добавления операции в историю
 
@@ -100,6 +108,8 @@ class IAccount(ABC):
                 operation_type (str): тип операции
                 amount (float): сумма операции
                 status (str): статус операции ('success' или 'fail')
+                message (str): сообщение
+                funds_type (str): тип используемых средств
         """
         pass
 
@@ -129,9 +139,10 @@ class Account(IAccount):
 
         # Добавляем начальный баланс в историю, если он больше 0
         if balance > 0:
-            self._add_to_history(OperationType.INITIAL_DEPOSIT, balance, OperationStatus.SUCCESS, 'Операция прошла успешно')
+            self._add_to_history(OperationType.INITIAL_DEPOSIT, balance, OperationStatus.SUCCESS,
+                                 'Операция прошла успешно')
 
-    def _add_to_history(self, operation_type, amount, status, message):
+    def _add_to_history(self, operation_type, amount, status, message, funds_type=FundsType.OWN):
 
         operation: Operation = {
             'type': operation_type,
@@ -139,7 +150,8 @@ class Account(IAccount):
             'datetime': datetime.now(),
             'balance_after': self._balance,
             'status': status,
-            'message': message
+            'message': message,
+            'funds_type': funds_type,
         }
 
         self.operations_history.append(operation)
@@ -191,14 +203,131 @@ class Account(IAccount):
     def get_history(self):
         return self.operations_history
 
+    # ================================================= Кредитный счет =================================================
+
+
+class CreditAccount(Account):
+    """
+    Кредитный счет, наследуемый от Account
+    """
+
+    def __init__(self, account_holder: str, balance: float, credit_limit: float):
+        """
+        Конструктор кредитного счета
+
+        Args:
+            account_holder (str): имя владельца счёта
+            balance (float): начальный баланс счёта
+            credit_limit (float): кредитный лимит (должен быть положительным)
+        """
+        if credit_limit < 0:
+            raise ValueError('Кредитный лимит не может быть отрицательным')
+
+        # Для кредитного счета разрешаем отрицательный баланс при инициализации
+        # но проверяем, что он не ниже кредитного лимита
+        if balance < -credit_limit:
+            raise ValueError('Начальный баланс не может быть ниже кредитного лимита')
+
+        self.credit_limit = credit_limit
+
+        # Вызов конструктора супер класса при наследовании
+        super().__init__(account_holder, balance)
+
+    def _calculate_funds_type(self, amount: float) -> FundsType:
+        """
+        Определяет тип используемых средств для операции снятия
+
+        Args:
+            amount (float): сумма операции
+
+        Returns:
+            FundsType: тип использованных средств
+        """
+        if self._balance >= amount:
+            return FundsType.OWN
+        elif self._balance <= 0:
+            return FundsType.CREDIT
+        else:
+            return FundsType.MIXED
+
+    def withdraw(self, amount: float) -> bool:
+
+        if amount <= 0:
+            self._add_to_history(
+                OperationType.WITHDRAW, amount, OperationStatus.FAIL,
+                'Сумма не может быть отрицательной или нулевой'
+            )
+            return False
+
+        # Проверяем, не превышает ли запрашиваемая сумма доступные средства
+        if amount > self._balance + self.credit_limit:
+            self._add_to_history(
+                OperationType.WITHDRAW, amount, OperationStatus.FAIL,
+                'Превышен кредитный лимит'
+            )
+            return False
+
+        # тип используемых средств до изменения баланса
+        funds_type = self._calculate_funds_type(amount)
+
+        self._balance -= amount
+
+        # добавляем в историю с информацией о типе средств
+        self._add_to_history(
+            OperationType.WITHDRAW, amount, OperationStatus.SUCCESS,
+            'Операция прошла успешно', FundsType.CREDIT
+        )
+        return True
+
+    def get_available_credit(self) -> float:
+        """
+        Возвращает сумму доступных кредитных средств
+
+        Returns:
+            float: доступные кредитные средства (текущий баланс + кредитный лимит)
+        """
+        return self._balance + self.credit_limit
+
+    def get_credit_limit(self) -> float:
+        """
+        Возвращает кредитный лимит
+
+        Returns:
+            float: кредитный лимит
+        """
+        return self.credit_limit
+
+    def get_used_credit(self) -> float:
+        """
+        Возвращает сумму использованных кредитных средств
+
+        Returns:
+            float: использованные кредитные средства (отрицательная часть баланса)
+        """
+        return max(-self._balance, 0)
+
 
 if __name__ == '__main__':
+    print('======= Account =======')
     account = Account("Иван Иванов", 1000)
-
-    # Операции
+    #
+    # # Операции
     account.deposit(500)
     account.withdraw(200)
     account.withdraw(2000)  # Неудачная попытка (недостаточно средств)
     account.deposit(-100)  # Неудачная попытка (отрицательная сумма)
 
     print(account.get_history())
+
+    print('======= CreditAccount =======')
+
+    credit_account = CreditAccount("Петр Петров", 1000, 5000)
+
+    print(f"Начальный баланс: {credit_account.get_balance()} руб.")
+    print(f"Кредитный лимит: {credit_account.get_credit_limit()} руб.")
+    print(f"Доступные средства: {credit_account.get_available_credit()} руб.")
+
+    # Операции с использованием кредитных средств
+    credit_account.withdraw(3000)  # 1000 собственных + 2000 кредитных
+
+    print(credit_account.get_history())
